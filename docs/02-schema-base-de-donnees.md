@@ -1,7 +1,7 @@
 # HomePedia : schéma MariaDB
 
-> Source de vérité : [`backend/src/database/sql/001_initial_schema.sql`](../backend/src/database/sql/001_initial_schema.sql),
-> exécuté par la migration TypeORM `InitialSchema1759363200000`. 44 tables, MariaDB ≥ 10.6 (testé sur 11.4).
+> Source de vérité : [`api/app/sql/001_initial_schema.sql`](../api/app/sql/001_initial_schema.sql), complété par les fichiers
+> `00X_*.sql` suivants, tous exécutés au démarrage de l'API. 44 tables au départ, MariaDB ≥ 10.6 (testé sur 11.4).
 
 ## 1. Principes
 
@@ -11,7 +11,7 @@
 | **Trois niveaux de rattachement** | *Adresse* (`risk_assessment`, `travel_time`, `solar_potential`...) ; *commune* (`catnat_decree`, `water_quality_result`, `socio_indicator`...) ; *objet géographique autonome* avec sa propre géométrie (`nuisance_poi`, `school`, `risk_site`, `mobile_site`...), interrogé par rayon autour de l'adresse. Un même objet sert donc à plusieurs adresses sans duplication. |
 | **Traçabilité et fraîcheur** | Chaque table métier porte `source_code` (FK `data_source`), `fetched_at` et `expires_at`. Le TTL par défaut est défini par source dans `data_source.ttl_seconds` (de 15 min pour OpenSky à 1 an pour les projections climatiques). |
 | **Cache** | Chaque collecte « source × cible » est journalisée dans `fetch_log`. Si une collecte réussie non expirée existe pour la même cible, l'API externe n'est pas rappelée (`status: cached`). `?force=true` contourne le cache. |
-| **Réponses brutes** | `raw_payload` archive le JSON brut d'une collecte (désactivable via `STORE_RAW_PAYLOADS`), pour rejouer une normalisation sans rappeler l'API. |
+| **Réponses brutes** | La collection MongoDB `raw_payloads` archive le JSON brut d'une collecte (désactivable via `STORE_RAW_PAYLOADS`), pour rejouer une normalisation sans rappeler l'API. La table `raw_payload` n'est plus alimentée. |
 | **Géospatial** | WGS84 (SRID 4326), WKT en ordre « lon lat ». Colonnes `POINT` / `GEOMETRY` `NOT NULL` + `SPATIAL INDEX` (R-tree). Les `latitude` / `longitude` sont aussi stockées en `DECIMAL(9,6)` pour l'export et le tri. |
 | **Idempotence** | Chaque table a une clé naturelle unique (IDU, n° DPE, code BSS, SIRET...). Les collectes font des `INSERT … ON DUPLICATE KEY UPDATE` : rejouer une collecte ne crée pas de doublon. DVF, sans identifiant de ligne, est dédoublonné par un hachage SHA-1 du contenu (`row_hash`). |
 | **Données semi-structurées** | Colonnes `LONGTEXT CHECK (JSON_VALID(...))` (équivalent MariaDB du type JSON) pour les listes et détails variables : usages sécheresse, tags OSM, détails ICPE. |
@@ -131,7 +131,7 @@ Seules `address`, `parcel` et les tables « à l'adresse » ont des clés étran
 
 ## 4. Requêtes spatiales
 
-Recherche « dans un rayon » (`common/geo/spatial-query.ts`) en deux temps :
+Recherche « dans un rayon » (`db.within_radius`, dans `api/app/db.py`) en deux temps :
 
 ```sql
 SELECT s.*, ROUND(ST_Distance_Sphere(s.location, ST_GeomFromText(:center, 4326))) AS distance_m
@@ -141,22 +141,47 @@ WHERE MBRContains(ST_GeomFromText(:bbox, 4326), s.location)              -- 1. i
 ORDER BY distance_m;
 ```
 
-Pour les lignes et polygones (zones PLU, lignes HT), `MBRIntersects` filtre via l'index, puis la distance exacte point/ligne est calculée en TypeScript (`ST_Distance_Sphere` de MariaDB n'accepte que des points).
+Pour les lignes et polygones (zones PLU, lignes HT), `MBRIntersects` filtre via l'index, puis la distance exacte point/ligne est calculée en Python, dans `geo_utils.py` (`ST_Distance_Sphere` de MariaDB n'accepte que des points).
 
-## 5. Choix de l'ORM : TypeORM
+## 5. Accès aux données : SQLAlchemy Core, sans classes d'entités
 
-| Critère | TypeORM | Prisma |
-|---|---|---|
-| Types spatiaux MariaDB (`POINT`, `GEOMETRY`) | Natifs. Lecture/écriture via `ST_GeomFromText` / `ST_AsText` (option `legacySpatialSupport: false`) | `Unsupported("geometry")` : colonne inutilisable dans le client généré, SQL brut obligatoire |
-| `SPATIAL INDEX` | Déclarable (`@Index({ spatial: true })`) et créé par les migrations | Non géré par le schéma Prisma |
-| Fonctions spatiales dans les requêtes | QueryBuilder + SQL inline (`MBRContains`, `ST_Distance_Sphere`) | `$queryRaw` uniquement |
-| Upsert en masse | `upsert()` → `INSERT … ON DUPLICATE KEY UPDATE` | `upsert` unitaire, `createMany` sans mise à jour |
-| Intégration NestJS | Module officiel `@nestjs/typeorm` | Intégration manuelle |
+Le schéma est écrit en SQL pour garder la main sur les index spatiaux, les contraintes `CHECK (JSON_VALID)` et les clés
+étrangères ; rien n'est synchronisé automatiquement. Côté Python, `api/app/db.py` lit la structure des tables dans
+`information_schema` au démarrage et en déduit :
 
-Le projet repose sur des requêtes spatiales pour la plupart de ses lectures, d'où le choix de TypeORM. Le schéma reste écrit en SQL (`001_initial_schema.sql`) pour garder la main sur les index, les contraintes `CHECK (JSON_VALID)` et les clés étrangères. `synchronize` est désactivé : seules les migrations modifient la base.
+| Besoin | Mise en œuvre |
+|---|---|
+| Noms | `insee_code` <-> `inseeCode` : les lignes sont des dicts aux clés camelCase, celles que renvoie l'API |
+| Types | DECIMAL -> nombre, TINYINT(1) -> booléen, DATE -> « AAAA-MM-JJ », colonnes `CHECK JSON_VALID` -> objet |
+| Géométries | Écrites en WKT (`ST_GeomFromText(…, 4326)`), relues en GeoJSON (`ST_AsGeoJSON`) sur demande seulement |
+| Upsert en masse | `INSERT … ON DUPLICATE KEY UPDATE` multi-lignes, la clé unique de la table servant de clé de conflit |
+| Requêtes spatiales | `db.within_radius` et `db.intersects_area` (index R-tree puis distance exacte) |
 
 ## 6. Évolutions prévues
 
-- **Base non relationnelle** (exigée par le sujet Epitech) : déplacer `raw_payload` et les futures données textuelles (avis d'habitants) vers MongoDB, MariaDB gardant le modèle normalisé.
+- **Base non relationnelle** (exigée par le sujet Epitech) : fait pour les réponses brutes (`raw_payloads`) et les annonces scrapées (`listings`), voir [03 – Architecture](03-architecture-backend.md) §5. Restent les données textuelles (avis d'habitants).
 - **Partitionnement** de `dvf_mutation` par année (`PARTITION BY RANGE`) au passage à l'échelle nationale (~20 M de lignes).
 - Agrégats lourds (indice de prix national, horaires GTFS) calculés hors API, sur Spark, puis réinjectés dans `price_index` et `transit_feed`.
+
+## Évolutions (migration `002_territories_and_sources.sql`)
+
+| Table | Clé | Contenu | Index |
+|---|---|---|---|
+| `region` | `code` | Régions (API Géo) | |
+| `department` | `code` | Départements et leur région | `(region_code)` |
+| `commune_energy_consumption` | `id` | Consommation d'électricité et de gaz par commune, année et grand secteur (Agence ORE) | unique `(insee_code, year, energy, sector)` |
+
+Les indicateurs ajoutés (tranches d'âge, populations depuis 1968, emploi et chômage, niveau de vie Filosofi) vont dans la
+table existante `socio_indicator` (une ligne par commune, indicateur et année).
+
+Les migrations appliquées sont suivies dans la table `schema_migration` ; les fichiers `app/sql/00X_*.sql` sont exécutés
+dans l'ordre au démarrage de l'API.
+
+## Collections MongoDB
+
+| Collection | Contenu | Clé / index |
+|---|---|---|
+| `raw_payloads` | Réponses brutes des collectes | `(sourceCode, targetKey, createdAt)` |
+| `listings` | Annonces scrapées | unique `(source, sourceId)`, `2dsphere` |
+| `contours` | Contours GeoJSON (régions, départements, communes) | unique `(level, code)` |
+| `reviews` | Avis Google Maps et MeilleursAgents | unique `(source, externalId)` |

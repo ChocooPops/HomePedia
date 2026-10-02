@@ -211,8 +211,8 @@ Aucune source ouverte connue : **frelons asiatiques** (hors jeux locaux), **mér
 5. **Exigences du sujet Epitech absentes de la demande** :
    - *Base non relationnelle obligatoire* : MariaDB seule ne suffit pas. Proposition : **MongoDB** pour les réponses brutes (`raw_payload`) et les données textuelles, avec MariaDB pour le modèle normalisé.
    - *Source textuelle obligatoire* traitée par IA (analyse de sentiment, extraction) : aucune source listée n'en fournit. Proposition : avis d'habitants sur les communes (ville-ideale.fr, toléré par le sujet) avec extraction de mentions (rats, punaises, bruit, insécurité…). Cela comble aussi une partie des ❌ du §3.
-   - *Cluster Spark* : les traitements lourds (DVF → `price_index`, GTFS → `transit_service_stat`, fichiers ARCEP/ANFR) seront isolés pour être exécutés sur Spark ou Databricks, pas dans NestJS.
-6. **ORM : TypeORM** (justification détaillée à l'étape 2). Il gère les types spatiaux MariaDB (`POINT`, `POLYGON`) et les `SPATIAL INDEX` dans les entités et les migrations, alors que Prisma ne connaît la géométrie que comme `Unsupported(...)` et impose du SQL brut pour ces index.
+   - *Cluster Spark* : les traitements lourds (DVF → `price_index`, GTFS → `transit_service_stat`, fichiers ARCEP/ANFR) seront isolés pour être exécutés sur Spark ou Databricks, pas dans l'API.
+6. **Accès aux données** : SQL écrit à la main et SQLAlchemy Core (détail dans le document 02), pour garder la main sur les types spatiaux MariaDB (`POINT`, `POLYGON`) et les `SPATIAL INDEX`.
 
 ---
 
@@ -238,3 +238,24 @@ L'implémentation a révélé d'autres écarts avec la liste de départ :
 **Prévu au §2 mais pas encore implémenté** : LCZ Cerema (îlot de chaleur), pollution lumineuse (raster), encadrement des loyers, présence du loup (OFB), meublés de tourisme, RNA (vie associative), FINESS (maternités), assainissement (SISPEA), CAF petite enfance, Météo-France (brouillard). Les réponses de lecture de l'API signalent leurs principales lacunes dans un champ `notCovered`.
 
 **Implémenté sans test réel faute de clé** : Atmo France, Annuaire Santé FHIR, Sirene 3.11 (code conforme à la documentation officielle, renvoie `skipped` tant que la clé est absente).
+
+## Analyse de territoire : sources ajoutées
+
+| Donnée métier | Source | Accès | Stockage |
+|---|---|---|---|
+| Régions, départements | API Géo | REST, sans clé | `region`, `department` |
+| Contours des communes | API Géo (`geometry=contour`) | REST, sans clé | MongoDB `contours` |
+| Contours des régions et départements | france-geojson (GitHub) | fichiers GeoJSON | MongoDB `contours` |
+| Population depuis 1968 | INSEE Melodi `DS_POPULATIONS_HISTORIQUES` | REST, sans clé | `socio_indicator` (`municipal_population`) |
+| Tranches d'âge | INSEE Melodi `DS_RP_POPULATION_PRINC` | REST, sans clé | `socio_indicator` (`age_*`, `share_age_*`) |
+| Actifs, emploi, chômage (15-64 ans) | INSEE Melodi `DS_RP_EMPLOI_LR_PRINC` | REST, sans clé | `socio_indicator` (`unemployment_rate`, `activity_rate`…) |
+| Logements vacants, résidences secondaires | INSEE Melodi `DS_RP_LOGEMENT_PRINC` | REST, sans clé | `socio_indicator` |
+| Niveau de vie, pauvreté, Gini | INSEE Melodi `DS_FILOSOFI_CC` | REST, sans clé | `socio_indicator` (`median_living_standard`, `poverty_rate`, `gini_index`…) |
+| Transactions d'un département | DVF géolocalisé, `…/{année}/departements/{dep}.csv.gz` | fichier | `dvf_mutation`, `price_index` |
+| Consommation d'électricité et de gaz | Agence ORE (API data-fair, interrogée par commune) | REST, sans clé | `commune_energy_consumption` |
+| Avis sur des lieux | Google Maps Places API (New) | clé payante, 5 avis par lieu | MongoDB `reviews` |
+| Avis de quartiers et d'agences | MeilleursAgents | fichiers exportés à la main | MongoDB `reviews` |
+
+Remarques : le chômage est celui du recensement (déclaratif), supérieur au taux au sens du BIT ; les mesures Filosofi
+absentes pour une commune sont couvertes par le secret statistique ; les populations de 1968 à 1999 sont des populations
+sans doubles comptes, celles d'après 2006 des populations municipales.

@@ -1,8 +1,12 @@
 # HomePedia : routes de l’API
 
 > Généré à partir d’appels réels sur l’API locale (adresse de test : 2 rue de la République, Amiens).
-> Préfixe commun : `/api`. Documentation interactive Swagger : `http://localhost:3000/api/docs`.
+> Préfixe commun : `/api`. Documentation interactive Swagger : `http://localhost:8000/api/docs`.
 > Les tableaux des réponses sont tronqués (« … (n éléments) »).
+
+> Les exemples ci-dessous ont été relevés sur la première version de l’API ; la version Python renvoie les mêmes champs,
+> avec `sourceCode` / `fetchedAt` / `expiresAt` en fin d’objet. Les routes ajoutées depuis (territoires, énergie à la commune,
+> annonces, avis) sont décrites dans le sommaire et dans Swagger.
 
 ## Conventions
 
@@ -66,6 +70,27 @@
 | GET | `/sources` | Registre des sources : statut de vérification, TTL, clé requise. |
 | GET | `/sources/fetch-logs` | Journal des collectes (filtres `source`, `status`, `target`, pagination). |
 | DELETE | `/addresses/:id` | Supprime une adresse et ses données rattachées (cascade). |
+| POST | `/territories/collect` | Charge les régions, les départements (API Géo) et leurs contours (france-geojson). |
+| GET | `/regions` · `/departments` | Régions ; départements (filtre `region`). |
+| GET | `/regions/contours` · `/departments/contours` | Contours GeoJSON (départements : filtre `region`). |
+| POST | `/departments/:dep/contours/collect` | Charge les contours des communes du département. |
+| GET | `/departments/:dep/communes/contours` | Contours GeoJSON des communes du département. |
+| POST | `/departments/:dep/dvf/collect` | Import DVF du département (`years`, défaut : dernière année publiée) + recalcul des indices communaux. |
+| GET | `/departments/:dep/prices` | Prix au m² médian par commune (`year`, `type` = Ensemble, Appartement ou Maison). |
+| POST | `/communes/:insee/collect-all` | Collecte de la commune : contour, recensement, emploi, revenus, DVF, énergie. |
+| GET | `/communes/:insee/report` | Fiche commune consolidée : démographie, emploi, revenus, marché, énergie, risques, avis. |
+| POST | `/communes/:insee/energy/collect` | Collecte la consommation d’électricité et de gaz de la commune (Agence ORE). |
+| GET | `/communes/:insee/energy` | Consommation par année, énergie et grand secteur. |
+| POST | `/addresses/:id/reviews/collect` | Avis Google des lieux autour de l’adresse (`radius`, clé `GOOGLE_MAPS_API_KEY`). |
+| POST | `/reviews/import` | Import d’avis de quartiers ou d’agences (MeilleursAgents), 2 000 max. En-tête `X-Ingest-Token` si défini. |
+| GET | `/reviews` | Avis paginés (filtres `source`, `kind`, `insee`, `postalCode`, `minRating`, `q`). |
+| GET | `/communes/:insee/reviews/summary` | Nombre d’avis et note moyenne par source et par type. |
+| GET | `/overview` | Volumes stockés et état des sources (tableau de bord). |
+| POST | `/listings/ingest` | Ingestion d’un lot d’annonces scrapées (`source` + `items`, 500 max). En-tête `X-Ingest-Token` si `INGEST_TOKEN` est défini. |
+| GET | `/listings` | Annonces paginées (filtres `insee`, `postalCode`, `department`, `source`, `transactionType`, `propertyType`, `minPrice`/`maxPrice`, `minArea`/`maxArea`, `minRooms` ; tri `sort`). |
+| GET | `/listings/:id` | Annonce complète, avec historique de prix et objet d’origine. |
+| GET | `/addresses/:id/listings` | Annonces géolocalisées dans un rayon (`radius`, défaut 1000 m) autour de l’adresse, triées par distance. |
+| GET | `/communes/:insee/listings/stats` | Prix au m² des annonces de la commune (médiane, moyenne, extrêmes) par type de transaction et de bien. |
 
 ## Géo : adresses, communes, parcelles, urbanisme
 
