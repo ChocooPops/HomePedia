@@ -1,0 +1,12 @@
+[project]
+name = "homepedia-api"
+version = "0.2.0"
+description = "HomePedia - collecte, normalisation et stockage des données publiques sur le logement"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140

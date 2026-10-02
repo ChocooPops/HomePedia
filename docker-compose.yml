@@ -23,20 +23,54 @@ services:
       timeout: 5s
       retries: 20
 
+  mongodb:
+    image: mongo:8.0
+    container_name: homepedia-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-homepedia}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-homepedia}
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   api:
-    build: ./backend
+    build: ./api
     container_name: homepedia-api
     profiles: ["full"]
     restart: unless-stopped
-    env_file: ./backend/.env
+    env_file: ./api/.env
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
+      MONGO_URI: mongodb://${MONGO_USER:-homepedia}:${MONGO_PASSWORD:-homepedia}@mongodb:27017/homepedia?authSource=admin
     ports:
-      - "${PORT:-3000}:3000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
       mariadb:
         condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: homepedia-frontend
+    profiles: ["full"]
+    restart: unless-stopped
+    environment:
+      HOMEPEDIA_API_URL: http://api:8000/api
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
+    ports:
+      - "${FRONT_PORT:-8501}:8501"
+    depends_on:
+      - api
 
 volumes:
   mariadb-data:
+  mongodb-data:
