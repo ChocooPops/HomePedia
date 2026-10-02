@@ -1,0 +1,42 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: homepedia-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MARIADB_DATABASE: ${DB_NAME:-homepedia}
+      MARIADB_USER: ${DB_USER:-homepedia}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-homepedia}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-allowed-packet=64M
+      - --innodb-buffer-pool-size=512M
+    ports:
+      - "${DB_HOST_PORT:-3310}:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ./backend
+    container_name: homepedia-api
+    profiles: ["full"]
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+volumes:
+  mariadb-data:
