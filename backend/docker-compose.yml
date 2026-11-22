@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-homepedia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-homepedia}
+      POSTGRES_DB: ${POSTGRES_DB:-homepedia}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-homepedia}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-homepedia}
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-homepedia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-homepedia}
+      POSTGRES_DB: ${POSTGRES_DB:-homepedia}
+      MONGO_URI: mongodb://${MONGO_USER:-homepedia}:${MONGO_PASSWORD:-homepedia}@mongo:27017/?authSource=admin
+      MONGO_DB: ${MONGO_DB:-homepedia}
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    volumes:
+      # Schémas montés : après modification de schema/postgres.sql ou schema/mongo.json, redémarrer l'API suffit.
+      - ./schema:/app/schema:ro
+
+volumes:
+  postgres_data:
+  mongo_data:

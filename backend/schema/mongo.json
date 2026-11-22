@@ -1,0 +1,74 @@
+{
+  "regions": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["code", "name", "coordinates"],
+        "additionalProperties": false,
+        "properties": {
+          "_id": { "bsonType": "objectId" },
+          "code": { "bsonType": "string", "maxLength": 3, "description": "Code INSEE de la région" },
+          "name": { "bsonType": "string", "maxLength": 100 },
+          "coordinates": {
+            "bsonType": "array",
+            "description": "Contour au format MultiPolygon GeoJSON : polygones > anneaux > [longitude, latitude]",
+            "items": { "bsonType": "array" }
+          }
+        }
+      }
+    },
+    "indexes": [
+      { "name": "pk_regions", "keys": { "code": 1 }, "unique": true }
+    ]
+  },
+
+  "departments": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["code", "name", "region_code", "coordinates"],
+        "additionalProperties": false,
+        "properties": {
+          "_id": { "bsonType": "objectId" },
+          "code": { "bsonType": "string", "maxLength": 3, "description": "Code INSEE du département" },
+          "name": { "bsonType": "string", "maxLength": 100 },
+          "region_code": { "bsonType": "string", "maxLength": 3 },
+          "coordinates": {
+            "bsonType": "array",
+            "description": "Contour au format MultiPolygon GeoJSON : polygones > anneaux > [longitude, latitude]",
+            "items": { "bsonType": "array" }
+          }
+        }
+      }
+    },
+    "indexes": [
+      { "name": "pk_departments", "keys": { "code": 1 }, "unique": true },
+      { "name": "idx_departments_region", "keys": { "region_code": 1 } }
+    ]
+  },
+
+  "communes": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["code", "name", "department_code", "coordinates"],
+        "additionalProperties": false,
+        "properties": {
+          "_id": { "bsonType": "objectId" },
+          "code": { "bsonType": "string", "maxLength": 5, "description": "Code INSEE de la commune" },
+          "name": { "bsonType": "string", "maxLength": 100 },
+          "department_code": { "bsonType": "string", "maxLength": 3 },
+          "coordinates": {
+            "bsonType": "array",
+            "description": "Contour au format MultiPolygon GeoJSON : polygones > anneaux > [longitude, latitude]",
+            "items": { "bsonType": "array" }
+          }
+        }
+      }
+    },
+    "indexes": [
+      { "name": "pk_communes", "keys": { "code": 1 }, "unique": true },
+      { "name": "idx_communes_department", "keys": { "department_code": 1 } }
+    ]
+  }
+}
