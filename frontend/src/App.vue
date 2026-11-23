@@ -1,14 +1,18 @@
 <script setup>
+import { shallowRef } from 'vue'
 import TopBar from '@/components/TopBar.vue'
 import FilterPanel from '@/components/FilterPanel.vue'
 import MapView from '@/components/MapView.vue'
+
+// Résultat choisi dans la barre de recherche, sur lequel la carte zoome.
+const focus = shallowRef(null)
 </script>
 
 <template>
   <div class="layout">
-    <TopBar class="layout__top" />
+    <TopBar class="layout__top" @select="focus = $event" />
     <FilterPanel class="layout__filters" />
-    <MapView class="layout__map" />
+    <MapView class="layout__map" :focus="focus" />
   </div>
 </template>
 

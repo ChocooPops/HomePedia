@@ -14,7 +14,7 @@ export default defineConfig({
     // En dev, /api/* est redirigé vers l'API FastAPI (port 8000) : pas de souci de CORS.
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.API_PROXY_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },

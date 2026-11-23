@@ -1,9 +1,15 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import L from 'leaflet'
 import { geoDataService, toFeatureCollection } from '@/services/geoData'
 
+const props = defineProps({
+  // Résultat de recherche à afficher : { kind, code, name, bbox: [lon_min, lat_min, lon_max, lat_max] }
+  focus: { type: Object, default: null },
+})
+
 const FRANCE_VIEW = { center: [46.6, 2.4], zoom: 6 }
+const ADDRESS_ZOOM = 16
 
 // Niveau de zoom à partir duquel chaque échelon s'affiche automatiquement.
 const DEPARTMENTS_ZOOM = 7
@@ -14,6 +20,8 @@ const STYLES = {
   hover: { weight: 3, fillOpacity: 0.4 },
   // Échelon supérieur laissé en fond quand un échelon plus fin est affiché.
   background: { color: '#6b7280', weight: 1, fillColor: '#9ca3af', fillOpacity: 0.05 },
+  // Entité trouvée par la recherche.
+  highlight: { color: '#ea580c', weight: 3, fillColor: '#f97316', fillOpacity: 0.25 },
 }
 
 const container = ref(null)
@@ -30,6 +38,8 @@ let regionsLayer = null
 const departmentLayers = new Map() // code région -> couche de ses départements
 const communeLayers = new Map() // code département -> couche de ses communes
 let updateId = 0
+let highlighted = null // { kind, code } de l'entité trouvée par la recherche
+let addressMarker = null
 
 const level = computed(() =>
   zoom.value >= COMMUNES_ZOOM ? 'communes' : zoom.value >= DEPARTMENTS_ZOOM ? 'departments' : 'regions',
@@ -53,7 +63,7 @@ const KIND_LABELS = { region: 'Région', department: 'Département', commune: 'C
  */
 function makeLayer(items, kind, zoomOnClick) {
   const layer = L.geoJSON(toFeatureCollection(items), {
-    style: STYLES.active,
+    style: styleFn(kind, STYLES.active),
     onEachFeature: (feature, featureLayer) => {
       featureLayer.on({
         mouseover: () => {
@@ -68,14 +78,23 @@ function makeLayer(items, kind, zoomOnClick) {
       })
     },
   })
+  layer.kind = kind
   return layer
 }
 
+function isHighlighted(kind, feature) {
+  return highlighted?.kind === kind && highlighted.code === feature.properties.code
+}
+
+/** Style d'une couche : `base` pour toutes les entités, sauf l'entité recherchée mise en évidence. */
+function styleFn(kind, base) {
+  return (feature) => (isHighlighted(kind, feature) ? { ...base, ...STYLES.highlight } : base)
+}
+
 // options.style est relu par resetStyle() au survol : on le garde aligné sur le style visible.
-function setLayerStyle(layer, style) {
-  if (layer.options.style === style) return
-  layer.options.style = style
-  layer.setStyle(style)
+function setLayerStyle(layer, base) {
+  layer.options.style = styleFn(layer.kind, base)
+  layer.setStyle(layer.options.style)
 }
 
 function zoomTo(bounds, minZoom) {
@@ -161,16 +180,62 @@ async function update() {
 
 /** Styles et ordre d'affichage : l'échelon le plus fin au-dessus et en couleur. */
 function render() {
+  if (!regionsLayer) return
   setLayerStyle(regionsLayer, level.value === 'regions' ? STYLES.active : STYLES.background)
   for (const layer of departmentLayers.values()) {
     setLayerStyle(layer, level.value === 'departments' ? STYLES.active : STYLES.background)
     if (map.hasLayer(layer)) layer.bringToFront()
   }
   for (const layer of communeLayers.values()) {
+    setLayerStyle(layer, STYLES.active)
     if (map.hasLayer(layer)) layer.bringToFront()
   }
+  bringHighlightToFront()
   updateBreadcrumb()
 }
+
+/**
+ * Passe le contour recherché au-dessus de ses voisins, seulement s'il est à l'échelon affiché :
+ * une région au premier plan masquerait sinon ses départements (survol, clics).
+ */
+function bringHighlightToFront() {
+  const activeLayers = {
+    regions: [regionsLayer],
+    departments: [...departmentLayers.values()],
+    communes: [...communeLayers.values()],
+  }[level.value]
+  for (const layer of activeLayers) {
+    if (!map.hasLayer(layer)) continue
+    layer.eachLayer((l) => isHighlighted(layer.kind, l.feature) && l.bringToFront())
+  }
+}
+
+// ------------------------------------------------------------------ //
+// Résultat de recherche
+// ------------------------------------------------------------------ //
+
+const FOCUS_MIN_ZOOM = { region: DEPARTMENTS_ZOOM, department: COMMUNES_ZOOM, commune: COMMUNES_ZOOM }
+
+function focusOn(target) {
+  addressMarker?.remove()
+  addressMarker = null
+  highlighted = target && target.kind !== 'address' ? { kind: target.kind, code: target.code } : null
+
+  if (target) {
+    const [west, south, east, north] = target.bbox
+    if (target.kind === 'address') {
+      const icon = L.divIcon({ className: 'search-marker', iconSize: [16, 16] })
+      addressMarker = L.marker([south, west], { icon, title: target.name }).addTo(map)
+      addressMarker.bindTooltip(target.name, { direction: 'top', offset: [0, -10] })
+      map.setView([south, west], ADDRESS_ZOOM)
+    } else {
+      zoomTo(L.latLngBounds([south, west], [north, east]), FOCUS_MIN_ZOOM[target.kind])
+    }
+  }
+  render()
+}
+
+watch(() => props.focus, focusOn)
 
 // ------------------------------------------------------------------ //
 // Fil d'Ariane : région / département sous le centre de la carte

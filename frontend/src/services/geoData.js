@@ -28,6 +28,11 @@ export const geoDataService = {
   getCommunesByDepartment(departmentCode) {
     return cached(`/geodata/departments/${encodeURIComponent(departmentCode)}/communes`)
   },
+
+  /** Régions, départements, communes et adresses correspondant à `query` (non mis en cache). */
+  search(query) {
+    return request(`/geodata/search?q=${encodeURIComponent(query)}`)
+  },
 }
 
 /** Convertit une liste de DTO (code, name, coordinates) en FeatureCollection GeoJSON. */
