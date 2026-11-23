@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     postgres_schema_path: Path = Path("schema/postgres.sql")
     mongo_schema_path: Path = Path("schema/mongo.json")
 
+    # --- Scraping (ScrapeUnblocker) ---
+    scrape_unblocker_url: str = "https://api.scrapeunblocker.com/getPageSource"
+    scrape_unblocker_header: str = "x-scrapeunblocker-key"
+    scrape_unblocker_key: str = ""
+
+    # --- Géocodage (Géoplateforme IGN) ---
+    geocoding_url: str = "https://data.geopf.fr/geocodage/search"
+
     @property
     def postgres_url(self) -> URL:
         return URL.create(

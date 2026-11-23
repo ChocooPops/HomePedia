@@ -70,5 +70,50 @@
       { "name": "pk_communes", "keys": { "code": 1 }, "unique": true },
       { "name": "idx_communes_department", "keys": { "department_code": 1 } }
     ]
+  },
+
+  "annonce_details": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "description": "Fiche complète d'une annonce, lue sur sa page (une par site et identifiant)",
+        "required": ["source", "source_id", "url", "scraped_at", "images"],
+        "additionalProperties": false,
+        "properties": {
+          "_id": { "bsonType": "objectId" },
+          "source": { "bsonType": "string", "maxLength": 30 },
+          "source_id": { "bsonType": "string", "maxLength": 64 },
+          "url": { "bsonType": "string" },
+          "scraped_at": { "bsonType": "date" },
+          "title": { "bsonType": ["string", "null"] },
+          "headline": { "bsonType": ["string", "null"] },
+          "description": { "bsonType": ["string", "null"] },
+          "price": { "bsonType": ["double", "int", "null"] },
+          "price_label": { "bsonType": ["string", "null"] },
+          "price_note": { "bsonType": ["string", "null"] },
+          "key_facts": { "bsonType": "array", "items": { "bsonType": "string" } },
+          "features": { "bsonType": "array", "description": "[{title, items[]}]", "items": { "bsonType": "object" } },
+          "energy": { "bsonType": "array", "description": "[{name, rating, values[{label, value}]}]", "items": { "bsonType": "object" } },
+          "energy_features": { "bsonType": "array", "items": { "bsonType": "object" } },
+          "costs": { "bsonType": "array", "description": "[{label, value}]", "items": { "bsonType": "object" } },
+          "price_comparison": { "bsonType": ["object", "null"] },
+          "city": { "bsonType": ["string", "null"] },
+          "postal_code": { "bsonType": ["string", "null"] },
+          "district": { "bsonType": ["string", "null"] },
+          "latitude": { "bsonType": ["double", "null"] },
+          "longitude": { "bsonType": ["double", "null"] },
+          "schools": { "bsonType": "array", "items": { "bsonType": "object" } },
+          "images": { "bsonType": "array", "description": "[{url, description}]", "items": { "bsonType": "object", "required": ["url"] } },
+          "virtual_tours": { "bsonType": "array", "items": { "bsonType": "string" } },
+          "tags": { "bsonType": "array", "items": { "bsonType": "string" } },
+          "publisher_type": { "bsonType": ["string", "null"], "description": "agence, particulier (aucune donnée sur l'annonceur)" },
+          "published_at": { "bsonType": ["date", "null"] },
+          "updated_at": { "bsonType": ["date", "null"] }
+        }
+      }
+    },
+    "indexes": [
+      { "name": "pk_annonce_details", "keys": { "source": 1, "source_id": 1 }, "unique": true }
+    ]
   }
 }

@@ -24,3 +24,93 @@ body {
   background: #ea580c;
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
 }
+
+/* Site d'origine d'une annonce (liste et popups de la carte). */
+.source-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Annonce(s) sur la carte : un point, ou un cercle numéroté quand plusieurs partagent la même position. */
+.listing-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #059669;
+  color: #fff;
+  font: 600 11px/1 system-ui, sans-serif;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+}
+
+.listing-marker--selected {
+  background: #ea580c;
+  z-index: 1000 !important; /* au-dessus des autres marqueurs */
+}
+
+/* Liste des offres d'un même endroit (popup Leaflet) : chaque ligne ouvre l'offre dans la fiche. */
+.listing-popup-container .leaflet-popup-content {
+  margin: 10px 12px;
+}
+
+.listing-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+
+.listing-popup__header {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.listing-popup__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.listing-popup__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.listing-popup__row:hover {
+  border-color: #93c5fd;
+  background: #f8fafc;
+}
+
+.listing-popup__row--selected {
+  border-color: #ea580c;
+  box-shadow: 0 0 0 1px #ea580c;
+  background: #fff7ed;
+}
+
+.listing-popup__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.listing-popup__muted {
+  color: #6b7280;
+}

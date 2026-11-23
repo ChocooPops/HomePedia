@@ -48,6 +48,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-homepedia}
       MONGO_URI: mongodb://${MONGO_USER:-homepedia}:${MONGO_PASSWORD:-homepedia}@mongo:27017/?authSource=admin
       MONGO_DB: ${MONGO_DB:-homepedia}
+      SCRAPE_UNBLOCKER_HEADER: ${SCRAPE_UNBLOCKER_HEADER:-x-scrapeunblocker-key}
+      SCRAPE_UNBLOCKER_KEY: ${SCRAPE_UNBLOCKER_KEY:-}
     ports:
       - "${API_HOST_PORT:-8000}:8000"
     volumes:

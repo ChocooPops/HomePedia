@@ -2,11 +2,25 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import L from 'leaflet'
 import { geoDataService, toFeatureCollection } from '@/services/geoData'
+import { describeDetails, describeListing, formatAddress, formatPrice, positionKey } from '@/utils/listing'
 
 const props = defineProps({
   // Résultat de recherche à afficher : { kind, code, name, bbox: [lon_min, lat_min, lon_max, lat_max] }
   focus: { type: Object, default: null },
+  // Annonces à placer sur la carte (AnnonceDto avec latitude / longitude)
+  listings: { type: Array, default: () => [] },
+  selectedListingId: { type: Number, default: null },
+  // Commune dont on affiche les annonces : { code, name }, mise en évidence sur la carte
+  selectedCommune: { type: Object, default: null },
 })
+
+const emit = defineEmits([
+  // { level, bbox: [ouest, sud, est, nord], department: { code, name } | null } après chaque déplacement
+  'view-change',
+  'select-listing',
+  // { code, name } de la commune cliquée, ou null quand on reclique la commune déjà choisie
+  'select-commune',
+])
 
 const FRANCE_VIEW = { center: [46.6, 2.4], zoom: 6 }
 const ADDRESS_ZOOM = 16
@@ -59,7 +73,8 @@ const KIND_LABELS = { region: 'Région', department: 'Département', commune: 'C
 
 /**
  * `kind` : region | department | commune (affiché au survol).
- * `zoomOnClick` : zoom minimal appliqué quand on clique une entité (aucun clic si absent).
+ * `zoomOnClick` : zoom minimal appliqué quand on clique une entité. Sans lui, cliquer une commune
+ * la choisit (ses annonces s'affichent) ; la recliquer annule ce choix.
  */
 function makeLayer(items, kind, zoomOnClick) {
   const layer = L.geoJSON(toFeatureCollection(items), {
@@ -68,13 +83,23 @@ function makeLayer(items, kind, zoomOnClick) {
       featureLayer.on({
         mouseover: () => {
           featureLayer.setStyle(STYLES.hover)
-          hovered.value = { kind: KIND_LABELS[kind], name: feature.properties.name }
+          hovered.value = {
+            kind: KIND_LABELS[kind],
+            name: feature.properties.name,
+            hint: kind === 'commune' ? 'Cliquer pour voir ses annonces' : null,
+          }
         },
         mouseout: () => {
           layer.resetStyle(featureLayer)
           if (hovered.value?.name === feature.properties.name) hovered.value = null
         },
-        click: () => zoomOnClick && zoomTo(featureLayer.getBounds(), zoomOnClick),
+        click: () => {
+          if (zoomOnClick) zoomTo(featureLayer.getBounds(), zoomOnClick)
+          else if (kind === 'commune') {
+            const { code, name } = feature.properties
+            emit('select-commune', props.selectedCommune?.code === code ? null : { code, name })
+          }
+        },
       })
     },
   })
@@ -83,7 +108,11 @@ function makeLayer(items, kind, zoomOnClick) {
 }
 
 function isHighlighted(kind, feature) {
-  return highlighted?.kind === kind && highlighted.code === feature.properties.code
+  const code = feature.properties.code
+  return (
+    (highlighted?.kind === kind && highlighted.code === code) ||
+    (kind === 'commune' && props.selectedCommune?.code === code)
+  )
 }
 
 /** Style d'une couche : `base` pour toutes les entités, sauf l'entité recherchée mise en évidence. */
@@ -169,9 +198,12 @@ async function update() {
   syncLayers(departmentLayers, regionCodes)
   render()
 
-  // Communes d'un seul département : celui sous le centre de la carte
-  const centerDepartment = level.value === 'communes' ? departmentAtCenter(regionCodes) : null
-  const departmentCodes = centerDepartment ? [centerDepartment.code] : []
+  // Le département sous le centre de la carte détermine les annonces à chercher…
+  const centerDepartment = level.value === 'regions' ? null : departmentAtCenter(regionCodes)
+  emitView(centerDepartment)
+
+  // … et, au niveau communes, les seules communes affichées.
+  const departmentCodes = level.value === 'communes' && centerDepartment ? [centerDepartment.code] : []
   await ensureLayers(communeLayers, departmentCodes, geoDataService.getCommunesByDepartment, 'commune')
   if (isStale()) return
   syncLayers(communeLayers, departmentCodes)
@@ -210,6 +242,130 @@ function bringHighlightToFront() {
   }
 }
 
+function emitView(department) {
+  const bounds = map.getBounds()
+  emit('view-change', {
+    level: level.value,
+    bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()],
+    department: department ? { code: department.code, name: department.name } : null,
+  })
+}
+
+// ------------------------------------------------------------------ //
+// Annonces
+// ------------------------------------------------------------------ //
+
+// Marqueurs HTML (divIcon) dans le pane des marqueurs : contrairement à un canvas superposé,
+// ils ne captent pas le survol et les clics destinés aux contours.
+let listingsLayer = null
+const listingMarkers = new Map() // position "lat,lon" -> { marker, items }
+
+/**
+ * Les annonces géocodées à la même position (souvent le centre d'une commune) partagent un marqueur.
+ * - une annonce : un clic l'ouvre dans la fiche de droite ;
+ * - plusieurs : un clic ouvre la liste des offres de cet endroit, où l'on choisit celle à afficher.
+ */
+function drawListings() {
+  if (!listingsLayer) return
+  const openKey = [...listingMarkers].find(([, entry]) => entry.marker.isPopupOpen())?.[0]
+  listingsLayer.clearLayers()
+  listingMarkers.clear()
+
+  const groups = new Map()
+  for (const listing of props.listings) {
+    const key = positionKey(listing)
+    if (!key) continue
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(listing)
+  }
+
+  for (const [key, items] of groups) {
+    const marker = L.marker([items[0].latitude, items[0].longitude], { icon: listingIcon(items), riseOnHover: true })
+    if (items.length > 1) {
+      marker.bindTooltip(`${items.length} offres à cet endroit · cliquer pour choisir`, {
+        direction: 'top',
+        offset: [0, -14],
+      })
+      marker.bindPopup(() => listingsPopup(items), {
+        maxHeight: 340,
+        minWidth: 260,
+        autoPanPadding: [40, 40],
+        className: 'listing-popup-container',
+      })
+      // La popup cache l'infobulle, inutile pendant le choix.
+      marker.on('popupopen', () => marker.closeTooltip())
+    } else {
+      marker.bindTooltip(`${formatPrice(items[0])} · ${describeListing(items[0])}`, {
+        direction: 'top',
+        offset: [0, -10],
+      })
+      marker.on('click', () => emit('select-listing', items[0].id))
+    }
+    listingsLayer.addLayer(marker)
+    listingMarkers.set(key, { marker, items })
+  }
+  // Après un rechargement (déplacement de la carte), la popup ouverte le reste.
+  if (openKey) listingMarkers.get(openKey)?.marker.openPopup()
+}
+
+function listingIcon(items) {
+  const selected = items.some((l) => l.id === props.selectedListingId)
+  const size = items.length > 1 ? 26 : 16
+  return L.divIcon({
+    className: `listing-marker${selected ? ' listing-marker--selected' : ''}`,
+    html: items.length > 1 ? `<span>${items.length > 99 ? '99+' : items.length}</span>` : '',
+    iconSize: [size, size],
+  })
+}
+
+/**
+ * Liste des offres d'un même endroit : chaque ligne ouvre l'offre dans la fiche de droite.
+ * Construite en DOM : les textes des annonces ne sont jamais interprétés comme du HTML.
+ */
+function listingsPopup(items) {
+  const element = (tag, className, text) => {
+    const node = document.createElement(tag)
+    if (className) node.className = className
+    if (text) node.textContent = text
+    return node
+  }
+  const root = element('div', 'listing-popup')
+  root.append(
+    element('div', 'listing-popup__header', `${items.length} offres à cet endroit`),
+    element('div', 'listing-popup__muted', formatAddress(items[0])),
+  )
+  const list = element('div', 'listing-popup__list')
+  for (const listing of items) {
+    const selected = listing.id === props.selectedListingId
+    const row = element('button', `listing-popup__row${selected ? ' listing-popup__row--selected' : ''}`)
+    row.type = 'button'
+    row.setAttribute('aria-pressed', String(selected))
+    const top = element('span', 'listing-popup__top')
+    top.append(element('strong', null, formatPrice(listing)), element('span', 'source-badge', listing.source_label))
+    row.append(top, element('span', 'listing-popup__facts', describeListing(listing)))
+    const details = describeDetails(listing)
+    if (details) row.append(element('span', 'listing-popup__muted', details))
+    row.addEventListener('click', () => emit('select-listing', listing.id))
+    list.append(row)
+  }
+  root.append(list)
+  return root
+}
+
+/** Annonce choisie (liste, carte ou fiche) : marqueur mis en évidence et ramené dans la vue. */
+function showSelectedListing() {
+  for (const { marker, items } of listingMarkers.values()) {
+    marker.setIcon(listingIcon(items))
+    // Liste d'offres ouverte : la ligne de l'offre choisie suit la sélection.
+    if (marker.isPopupOpen()) marker.setPopupContent(listingsPopup(items))
+  }
+  const entry = [...listingMarkers.values()].find(({ items }) => items.some((l) => l.id === props.selectedListingId))
+  if (entry && !map.getBounds().contains(entry.marker.getLatLng())) map.panTo(entry.marker.getLatLng())
+}
+
+watch(() => props.listings, drawListings)
+watch(() => props.selectedListingId, showSelectedListing)
+
 // ------------------------------------------------------------------ //
 // Résultat de recherche
 // ------------------------------------------------------------------ //
@@ -236,6 +392,7 @@ function focusOn(target) {
 }
 
 watch(() => props.focus, focusOn)
+watch(() => props.selectedCommune, render)
 
 // ------------------------------------------------------------------ //
 // Fil d'Ariane : région / département sous le centre de la carte
@@ -312,18 +469,27 @@ onMounted(() => {
       attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
     },
   ).addTo(map)
+  listingsLayer = L.layerGroup().addTo(map)
+  drawListings()
 
   map.on('zoom', () => (zoom.value = map.getZoom()))
   // Une couche retirée pendant un zoom ne déclenche pas de mouseout : on efface le survol.
   map.on('movestart', () => (hovered.value = null))
   map.on('moveend', update)
+  // La carte change de largeur quand la fiche d'une annonce s'ouvre ou se ferme : Leaflet doit le savoir.
+  resizeObserver = new ResizeObserver(() => map?.invalidateSize())
+  resizeObserver.observe(container.value)
   loadRegions()
 })
 
+let resizeObserver = null
+
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
   updateId++
   map?.remove()
   map = null
+  listingsLayer = null
 })
 </script>
 
@@ -335,6 +501,7 @@ onBeforeUnmount(() => {
       <div v-if="hovered" class="map-view__box map-view__hovered">
         <span class="map-view__kind">{{ hovered.kind }}</span>
         <strong>{{ hovered.name }}</strong>
+        <span v-if="hovered.hint" class="map-view__hint">{{ hovered.hint }}</span>
       </div>
       <div v-if="breadcrumb.length" class="map-view__box">
         <button type="button" @click="goBack">← Retour</button>
@@ -407,6 +574,11 @@ onBeforeUnmount(() => {
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.map-view__hint {
+  color: #6b7280;
+  font-size: 0.8rem;
 }
 
 .map-view__zoom {
