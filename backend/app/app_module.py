@@ -6,9 +6,9 @@ exporter `router` dans son __init__.py, puis l'ajouter ci-dessous.
 
 from fastapi import FastAPI
 
-from app.modules import geodata
+from app.modules import geodata, leboncoin
 
-MODULES = [geodata]
+MODULES = [geodata, leboncoin]
 
 
 def register_modules(app: FastAPI) -> None:

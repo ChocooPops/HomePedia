@@ -1,3 +1,7 @@
+import asyncio
+import logging
+import re
+import unicodedata
 from typing import Annotated, Any, Callable
 
 import httpx
@@ -11,6 +15,16 @@ ETALAB_URL = "https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2
 REGIONS_URL = f"{ETALAB_URL}/regions-1000m.geojson"
 DEPARTMENTS_URL = f"{ETALAB_URL}/departements-1000m.geojson"
 COMMUNES_URL = f"{ETALAB_URL}/communes-1000m.geojson"
+
+# Géocodeur de la Géoplateforme IGN (successeur d'api-adresse.data.gouv.fr), sans clé d'API.
+GEOCODER_URL = "https://data.geopf.fr/geocodage/search"
+
+# Nombre maximal de résultats par type dans la recherche.
+SEARCH_LIMITS = {"region": 3, "department": 3, "commune": 6, "address": 5}
+# Score minimal (0 à 1) d'une adresse renvoyée par le géocodeur.
+ADDRESS_MIN_SCORE = 0.5
+
+logger = logging.getLogger(__name__)
 
 Row = dict[str, Any]
 
@@ -46,6 +60,122 @@ class GeoDataService:
         if not communes:
             raise HTTPException(404, f"Aucune commune pour le département {department_code}")
         return communes
+
+    # ------------------------------------------------------------------ #
+    # Recherche
+    # ------------------------------------------------------------------ #
+
+    async def search(self, query: str) -> list[Row]:
+        """Régions, départements, communes (par nom ou code), puis adresses."""
+        query = query.strip()
+        await self._ensure_communes()
+        areas, addresses = await asyncio.gather(self._search_areas(query), self._search_addresses(query))
+        # « Paris », « Bretagne »… : le territoire suffit, les voies homonymes ne seraient que du bruit.
+        # Une saisie avec un chiffre (« 10 rue de Paris ») vise en revanche une adresse.
+        exact_area = any(_normalize(a["name"]) == _normalize(query) for a in areas)
+        if exact_area and not any(c.isdigit() for c in query):
+            addresses = []
+        return areas + addresses
+
+    async def _search_areas(self, query: str) -> list[Row]:
+        region_names = await self._names("regions")
+        department_names = await self._names("departments")
+        # Pas de recherche par code pour les régions : leurs codes (11, 75…) se confondent avec ceux des départements.
+        searches = [
+            ("region", "regions", False, lambda d: None),
+            ("department", "departments", True, lambda d: f"{d['code']} · {region_names.get(d['region_code'], '')}"),
+            (
+                "commune",
+                "communes",
+                True,
+                lambda d: f"{department_names.get(d['department_code'], '')} ({d['department_code']})",
+            ),
+        ]
+        results: list[Row] = []
+        for kind, collection, by_code, context in searches:
+            for doc in await self._find_by_name_or_code(collection, query, SEARCH_LIMITS[kind], by_code):
+                results.append(
+                    {
+                        "kind": kind,
+                        "code": doc["code"],
+                        "name": doc["name"],
+                        "context": context(doc),
+                        "bbox": _bbox(doc["coordinates"]),
+                    }
+                )
+        return results
+
+    async def _names(self, collection: str) -> dict[str, str]:
+        docs = await self.mongo[collection].find({}, {"_id": 0, "code": 1, "name": 1}).to_list()
+        return {d["code"]: d["name"] for d in docs}
+
+    async def _find_by_name_or_code(self, collection: str, query: str, limit: int, by_code: bool) -> list[Row]:
+        """Classement : code ou nom exact, puis nom commençant par la saisie, puis la contenant ; les plus courts d'abord."""
+        pattern = _name_pattern(query)
+        code = query.upper() if by_code else None
+        ranked = await (
+            await self.mongo[collection].aggregate(
+                [
+                    {"$match": {"$or": [{"name": {"$regex": pattern, "$options": "i"}}, {"code": code}]}},
+                    {"$project": {"_id": 0, "code": 1, "name": 1}},
+                    {
+                        "$addFields": {
+                            "rank": {
+                                "$switch": {
+                                    "branches": [
+                                        {"case": {"$eq": ["$code", code]}, "then": 0},
+                                        {"case": _regex_match(f"^{pattern}$"), "then": 0},
+                                        {"case": _regex_match(f"^{pattern}"), "then": 1},
+                                    ],
+                                    "default": 2,
+                                }
+                            },
+                            "length": {"$strLenCP": "$name"},
+                        }
+                    },
+                    {"$sort": {"rank": 1, "length": 1, "name": 1}},
+                    {"$limit": limit},
+                ]
+            )
+        ).to_list()
+        codes = [d["code"] for d in ranked]
+        docs = {d["code"]: d for d in await self.mongo[collection].find({"code": {"$in": codes}}, {"_id": 0}).to_list()}
+        return [docs[c] for c in codes if c in docs]
+
+    @staticmethod
+    async def _search_addresses(query: str) -> list[Row]:
+        """Adresses et voies via le géocodeur IGN. En cas d'indisponibilité, la recherche continue sans elles."""
+        if len(query) < 3:  # minimum exigé par le géocodeur
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get(GEOCODER_URL, params={"q": query, "limit": 10})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("Géocodeur indisponible : %s", exc)
+            return []
+
+        results: list[Row] = []
+        seen: set[str] = set()
+        for feature in response.json().get("features", []):
+            props = feature["properties"]
+            # Seulement les numéros et les voies : communes et lieux-dits sont couverts ou trop ambigus.
+            if props.get("type") not in ("housenumber", "street") or props.get("score", 0) < ADDRESS_MIN_SCORE:
+                continue
+            if props["label"] in seen:
+                continue
+            seen.add(props["label"])
+            lon, lat = feature["geometry"]["coordinates"]
+            results.append(
+                {
+                    "kind": "address",
+                    "code": None,
+                    "name": props["label"],
+                    "context": props.get("context"),
+                    "bbox": [lon, lat, lon, lat],
+                }
+            )
+        return results[: SEARCH_LIMITS["address"]]
 
     # ------------------------------------------------------------------ #
     # Chargement depuis Etalab (parents d'abord, pour les clés étrangères)
@@ -123,6 +253,46 @@ def _as_multipolygon(geometry: dict[str, Any]) -> list:
     if geometry["type"] == "Polygon":
         return [geometry["coordinates"]]
     return geometry["coordinates"]
+
+
+# Lettres équivalentes pour une recherche insensible aux accents (et à la casse, avec l'option "i").
+_ACCENTS = {
+    "a": "aàâäAÀÂÄ",
+    "c": "cçCÇ",
+    "e": "eéèêëEÉÈÊË",
+    "i": "iîïIÎÏ",
+    "o": "oôöOÔÖ",
+    "u": "uùûüUÙÛÜ",
+    "y": "yÿYŸ",
+}
+_SEPARATORS = re.compile(r"[\s'’-]+")
+
+
+def _normalize(text: str) -> str:
+    """Minuscules, sans accents, séparateurs remplacés par des espaces."""
+    text = unicodedata.normalize("NFD", text.lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return " ".join(w for w in _SEPARATORS.split(text) if w)
+
+
+def _name_pattern(query: str) -> str:
+    """Regex qui ignore accents, casse et séparateurs : « saint etienne » trouve « Saint-Étienne »."""
+    words = _normalize(query).split(" ")
+    return r"[\s'’-]+".join(
+        "".join(f"[{_ACCENTS[c]}]" if c in _ACCENTS else re.escape(c) for c in word) for word in words
+    )
+
+
+def _regex_match(regex: str) -> dict[str, Any]:
+    return {"$regexMatch": {"input": "$name", "regex": regex, "options": "i"}}
+
+
+def _bbox(coordinates: list) -> list[float]:
+    """Emprise [lon_min, lat_min, lon_max, lat_max] des anneaux extérieurs d'un MultiPolygon."""
+    points = [point for polygon in coordinates for point in polygon[0]]
+    lons = [p[0] for p in points]
+    lats = [p[1] for p in points]
+    return [min(lons), min(lats), max(lons), max(lats)]
 
 
 GeoDataServiceDep = Annotated[GeoDataService, Depends(GeoDataService)]

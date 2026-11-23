@@ -1,5 +1,9 @@
+from typing import Annotated
+
+from fastapi import Query
+
 from app.core.controller import controller, get
-from app.modules.geodata.dto import CommuneDto, DepartmentDto, RegionDto
+from app.modules.geodata.dto import CommuneDto, DepartmentDto, RegionDto, SearchResultDto
 from app.modules.geodata.service import GeoDataServiceDep
 
 
@@ -18,3 +22,8 @@ class GeoDataController:
     @get("/departments/{code}/communes", response_model=list[CommuneDto])
     async def get_communes_by_department(self, code: str):
         return await self.service.get_communes_by_department(code)
+
+    @get("/search", response_model=list[SearchResultDto])
+    async def search(self, q: Annotated[str, Query(min_length=2, max_length=200, description="Texte recherché")]):
+        """Régions, départements et communes par nom ou code, puis adresses (géocodeur IGN)."""
+        return await self.service.search(q)
